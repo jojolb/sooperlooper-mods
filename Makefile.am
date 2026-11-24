@@ -9,6 +9,8 @@
 # implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 
 EXTRA_DIST = autogen.sh configure OSC top_marker README_Windows.md windows
+EXTRA_DIST += tools/slweb.py tools/test_slweb.py \
+	tools/slweb_web/index.html tools/slweb_web/app.css tools/slweb_web/app.js
 SUBDIRS =  libs src
 
 #------ albBegin ----------------------------------
@@ -20,8 +22,19 @@ EXTRA_DIST += tools/sllatency.py tools/test_sllatency.py
 install-exec-local:
 	$(MKDIR_P) $(DESTDIR)$(bindir)
 	$(INSTALL_SCRIPT) $(srcdir)/tools/sllatency.py $(DESTDIR)$(bindir)/sllatency
+	$(INSTALL_SCRIPT) $(srcdir)/tools/slweb.py $(DESTDIR)$(bindir)/slweb
+
+install-data-local:
+	$(MKDIR_P) $(DESTDIR)$(datadir)/sooperlooper/slweb
+	$(INSTALL_DATA) $(srcdir)/tools/slweb_web/index.html $(DESTDIR)$(datadir)/sooperlooper/slweb/index.html
+	$(INSTALL_DATA) $(srcdir)/tools/slweb_web/app.css $(DESTDIR)$(datadir)/sooperlooper/slweb/app.css
+	$(INSTALL_DATA) $(srcdir)/tools/slweb_web/app.js $(DESTDIR)$(datadir)/sooperlooper/slweb/app.js
 
 uninstall-local:
 	rm -f $(DESTDIR)$(bindir)/sllatency
+	rm -f $(DESTDIR)$(bindir)/slweb
+	rm -f $(DESTDIR)$(datadir)/sooperlooper/slweb/index.html
+	rm -f $(DESTDIR)$(datadir)/sooperlooper/slweb/app.css
+	rm -f $(DESTDIR)$(datadir)/sooperlooper/slweb/app.js
 #------ albEnd ----------------------------------
 

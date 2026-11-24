@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111315">
+  <title>SooperLooper Web</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark">SL</span><div><strong>SooperLooper</strong><small>contrôle web</small></div></div>
+    <div class="connection"><span id="connection-dot" class="dot"></span><span id="connection-label">Connexion…</span><small id="engine-address"></small></div>
+  </header>
+
+  <main>
+    <section class="global-panel">
+      <div class="section-heading"><div><p class="eyebrow">MIX &amp; TEMPO</p><h1>Contrôle global</h1></div><span id="loop-count" class="count-badge">0 / 4 boucles</span></div>
+      <div class="global-controls">
+        <label class="control tempo-control"><span>Tempo <b id="tempo-value">—</b> <small>BPM</small></span><input id="tempo" type="range" min="30" max="300" step="0.1" data-scope="global" data-control="tempo"></label>
+        <label class="control"><span>Entrée <b id="input-gain-value">—</b></span><input id="input-gain" type="range" min="0" max="1" step="0.01" data-scope="global" data-control="input_gain"></label>
+        <label class="control"><span>Sortie sèche <b id="dry-value">—</b></span><input id="dry" type="range" min="0" max="1" step="0.01" data-scope="global" data-control="dry"></label>
+        <label class="control"><span>Sortie boucle <b id="wet-value">—</b></span><input id="wet" type="range" min="0" max="1" step="0.01" data-scope="global" data-control="wet"></label>
+        <label class="control sync-control"><span>Sync to</span><select id="sync-source" data-scope="global" data-control="sync_source">
+          <option value="0">Aucune</option>
+          <option value="-3">Interne</option>
+          <option value="-1">JACK / Host</option>
+          <option value="-2">MIDI</option>
+          <option value="1">Loop 1</option>
+          <option value="2">Loop 2</option>
+          <option value="3">Loop 3</option>
+          <option value="4">Loop 4</option>
+        </select></label>
+      </div>
+    </section>
+
+    <section class="loops-section">
+      <div class="section-heading"><div><p class="eyebrow">PERFORMANCE</p><h2>Les boucles</h2></div>
+        <div class="loop-actions"><button id="add-mono" class="button secondary">+ Mono</button><button id="add-stereo" class="button secondary">+ Stéréo</button><button id="remove-loop" class="button danger-outline">− Dernière</button></div>
+      </div>
+      <div id="loops" class="loops-grid"></div>
+      <p id="empty-state" class="empty-state">En attente du moteur SooperLooper…</p>
+      <p id="hidden-loops" class="notice" hidden></p>
+    </section>
+
+    <footer><span>slweb · commandes OSC directes</span><span id="status-message" role="status"></span></footer>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
