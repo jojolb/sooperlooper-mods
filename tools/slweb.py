@@ -4,6 +4,7 @@
 import argparse
 import json
 import math
+import ntpath
 import os
 import socket
 import struct
@@ -11,11 +12,12 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse, urlsplit
 
 
 MAX_LOOPS = 4
 MAX_BODY = 8192
+MAX_FILE_ENTRIES = 1000
 LOOP_AUTO_CONTROLS = (
     "state", "next_state", "loop_pos", "loop_len", "cycle_len",
     "waiting", "rate_output", "in_peak_meter", "out_peak_meter",
@@ -42,6 +44,18 @@ STATE_NAMES = {
     7: "insertion", 8: "remplacement", 9: "délai", 10: "muet",
     11: "scratch", 12: "one-shot", 13: "substitution", 14: "pause",
 }
+
+
+def _default_files_dir():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    source_dir = os.path.join(script_dir, "loops")
+    if os.path.isdir(source_dir):
+        return source_dir
+    if os.name == "nt":
+        user_data = os.environ.get("APPDATA", os.path.expanduser("~"))
+        return os.path.join(user_data, "SooperLooper", "loops")
+    user_data = os.environ.get("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share"))
+    return os.path.join(user_data, "sooperlooper", "loops")
 
 
 def _osc_string(value):
@@ -97,9 +111,11 @@ def decode_osc(packet):
 
 
 class SlWeb:
-    def __init__(self, engine_host, engine_port, callback_host, callback_port):
+    def __init__(self, engine_host, engine_port, callback_host, callback_port, files_dir=None):
         self.engine_host = engine_host
         self.engine_port = engine_port
+        self.files_dir = os.path.realpath(files_dir or _default_files_dir())
+        os.makedirs(self.files_dir, exist_ok=True)
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.state = {
@@ -328,26 +344,104 @@ class SlWeb:
             raise ValueError("Moteur SooperLooper non connecté")
         if index < 0 or index >= min(self.state["loop_count"], MAX_LOOPS):
             raise ValueError("Boucle invalide")
-        if not isinstance(filename, str) or not filename.strip() or len(filename) > 2048 or "\0" in filename:
-            raise ValueError("Chemin de fichier invalide")
+        filename = self.resolve_file(filename, for_save=False)
         self.send(
             "/sl/{}/load_loop".format(index),
             ("s", filename), ("s", self.callback_url), ("s", "/error"),
         )
 
-    def save_loop(self, index, filename):
+    def save_loop(self, index, filename, overwrite=False):
         index = int(index)
         if not self.state["connected"]:
             raise ValueError("Moteur SooperLooper non connecté")
         if index < 0 or index >= min(self.state["loop_count"], MAX_LOOPS):
             raise ValueError("Boucle invalide")
-        if not isinstance(filename, str) or not filename.strip() or len(filename) > 2048 or "\0" in filename:
-            raise ValueError("Chemin de fichier invalide")
+        if not isinstance(overwrite, bool):
+            raise ValueError("Confirmation de remplacement invalide")
+        filename = self.resolve_file(filename, for_save=True)
+        if os.path.exists(filename) and not overwrite:
+            raise FileExistsError("Ce fichier existe déjà; confirme son remplacement")
         self.send(
             "/sl/{}/save_loop".format(index),
             ("s", filename), ("s", "float"), ("s", "little"),
             ("s", self.callback_url), ("s", "/error"),
         )
+
+    def _relative_parts(self, relative_path, allow_root=False):
+        if not isinstance(relative_path, str) or len(relative_path) > 2048 or "\0" in relative_path:
+            raise ValueError("Chemin invalide")
+        if allow_root and relative_path in ("", "."):
+            return []
+        normalized = relative_path.replace("\\", "/")
+        if normalized.startswith("/") or ntpath.splitdrive(normalized)[0]:
+            raise ValueError("Le chemin doit rester dans le dossier de fichiers")
+        parts = normalized.split("/")
+        if not parts or any(part in ("", ".", "..") for part in parts):
+            raise ValueError("Chemin invalide")
+        return parts
+
+    def _assert_inside_files_dir(self, path):
+        try:
+            common = os.path.commonpath((self.files_dir, os.path.realpath(path)))
+        except ValueError:
+            raise ValueError("Le chemin doit rester dans le dossier de fichiers")
+        if os.path.normcase(common) != os.path.normcase(self.files_dir):
+            raise ValueError("Le chemin doit rester dans le dossier de fichiers")
+
+    def resolve_directory(self, relative_path=""):
+        parts = self._relative_parts(relative_path, allow_root=True)
+        path = os.path.realpath(os.path.join(self.files_dir, *parts))
+        self._assert_inside_files_dir(path)
+        if not os.path.isdir(path):
+            raise FileNotFoundError("Dossier introuvable")
+        return path
+
+    def resolve_file(self, relative_path, for_save=False):
+        parts = self._relative_parts(relative_path)
+        if not parts[-1].lower().endswith(".wav"):
+            raise ValueError("Seuls les fichiers WAV sont pris en charge")
+        path = os.path.join(self.files_dir, *parts)
+        parent = os.path.realpath(os.path.dirname(path))
+        self._assert_inside_files_dir(parent)
+        if not os.path.isdir(parent):
+            raise FileNotFoundError("Dossier de destination introuvable")
+        path = os.path.join(parent, parts[-1])
+        if os.path.lexists(path):
+            self._assert_inside_files_dir(path)
+        if for_save:
+            if os.path.isdir(path):
+                raise ValueError("Le chemin choisi est un dossier")
+        elif not os.path.isfile(path):
+            raise FileNotFoundError("Fichier WAV introuvable")
+        return os.path.realpath(path)
+
+    def list_files(self, relative_path=""):
+        directory = self.resolve_directory(relative_path)
+        entries = []
+        with os.scandir(directory) as iterator:
+            for entry in iterator:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    self._assert_inside_files_dir(entry.path)
+                    if entry.is_dir(follow_symlinks=True):
+                        kind = "directory"
+                    elif entry.name.lower().endswith(".wav") and entry.is_file(follow_symlinks=True):
+                        kind = "file"
+                    else:
+                        continue
+                except (OSError, ValueError):
+                    continue
+                relative = os.path.relpath(entry.path, self.files_dir).replace(os.sep, "/")
+                entries.append({"name": entry.name, "path": relative, "type": kind})
+        entries.sort(key=lambda item: (item["type"] != "directory", item["name"].casefold()))
+        truncated = len(entries) > MAX_FILE_ENTRIES
+        return {
+            "path": os.path.relpath(directory, self.files_dir).replace(os.sep, "/")
+            if directory != self.files_dir else "",
+            "entries": entries[:MAX_FILE_ENTRIES],
+            "truncated": truncated,
+        }
 
     def add_loop(self, channels):
         if not self.state["connected"]:
@@ -411,10 +505,20 @@ def make_handler(app, assets):
             self.wfile.write(body)
 
         def do_GET(self):
-            if self.path == "/api/state":
+            parsed_url = urlsplit(self.path)
+            if parsed_url.path == "/api/state":
                 self._json(200, app.snapshot())
                 return
-            asset = "index.html" if self.path in ("/", "/index.html") else self.path.lstrip("/")
+            if parsed_url.path == "/api/files":
+                relative_path = parse_qs(parsed_url.query, keep_blank_values=True).get("path", [""])[0]
+                try:
+                    self._json(200, app.list_files(relative_path))
+                except ValueError as error:
+                    self._json(400, {"error": str(error)})
+                except OSError as error:
+                    self._json(404, {"error": str(error)})
+                return
+            asset = "index.html" if parsed_url.path in ("/", "/index.html") else parsed_url.path.lstrip("/")
             if asset not in ("index.html", "app.css", "app.js"):
                 self.send_error(404)
                 return
@@ -466,11 +570,13 @@ def make_handler(app, assets):
                 elif self.path == "/api/load":
                     app.load_loop(data.get("index"), data.get("filename"))
                 elif self.path == "/api/save":
-                    app.save_loop(data.get("index"), data.get("filename"))
+                    app.save_loop(data.get("index"), data.get("filename"), data.get("overwrite", False))
                 else:
                     self.send_error(404)
                     return
                 self._json(200, {"ok": True})
+            except FileExistsError as error:
+                self._json(409, {"error": str(error)})
             except (ValueError, TypeError, OSError) as error:
                 self._json(400, {"error": str(error)})
 
@@ -484,21 +590,28 @@ def main(argv=None):
     parser.add_argument("--callback-port", type=int, default=0, help="port OSC de retour; 0 = automatique")
     parser.add_argument("--http-host", default="127.0.0.1", help="adresse HTTP (défaut: localhost)")
     parser.add_argument("--http-port", type=int, default=8080, help="port HTTP (défaut: 8080)")
+    parser.add_argument(
+        "--files-dir",
+        help="racine de navigation WAV (défaut: tools/loops en source, dossier utilisateur après installation)",
+    )
     args = parser.parse_args(argv)
 
     if not (1 <= args.osc_port <= 65535 and 0 <= args.callback_port <= 65535):
         parser.error("port OSC invalide")
     if not (1 <= args.http_port <= 65535):
         parser.error("port HTTP invalide")
-    app = SlWeb(args.osc_host, args.osc_port, "0.0.0.0", args.callback_port)
+    app = SlWeb(args.osc_host, args.osc_port, "0.0.0.0", args.callback_port, args.files_dir)
     app.start()
     server = ThreadingHTTPServer((args.http_host, args.http_port), make_handler(app, _asset_dir()))
     server.daemon_threads = True
-    print("slweb: http://{}:{}/ (moteur OSC {}:{})".format(
-        args.http_host, args.http_port, args.osc_host, args.osc_port
+    print("slweb: http://{}:{}/ (moteur OSC {}:{}, fichiers {})".format(
+        args.http_host, args.http_port, args.osc_host, args.osc_port, app.files_dir
     ), flush=True)
     if args.http_host not in ("127.0.0.1", "localhost", "::1"):
-        print("slweb: attention, HTTP est accessible sur le réseau local sans authentification", file=sys.stderr)
+        print(
+            "slweb: attention, commandes et fichiers accessibles sur le réseau sans authentification",
+            file=sys.stderr,
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:

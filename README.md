@@ -113,9 +113,9 @@ minimal interface over HTTP and connects to an already-running SooperLooper
 engine over OSC. It shows up to four loops, with live state/position,
 transport commands (including Solo and Once), loading and saving WAV files
 by path on the engine machine, per-loop Sync/Play sync and Quantize controls,
-feedback/input-gain controls, and global tempo/mix sliders. `Sync to` selects
-none, internal clock, JACK/Host, MIDI clock, or one of the four loops. MIDI
-binding management is not included.
+feedback/input-gain/Wet controls with live Wet meters, and global tempo/mix
+sliders. `Sync to` selects none, internal clock, JACK/Host, MIDI clock, or one
+of the four loops. MIDI binding management is not included.
 
 Run it from a source checkout with Python 3:
 
@@ -125,9 +125,13 @@ python3 tools/slweb.py
 
 Then open <http://127.0.0.1:8080/>. The engine defaults to OSC
 `127.0.0.1:9951`; use `--osc-host` and `--osc-port` to select another
-engine. After installation, run `slweb`. The HTTP server listens on
+engine. **Load…** and **Save…** browse `tools/loops` by default in a source
+checkout (the user's data directory after installation); set `--files-dir
+PATH` to choose another WAV library. The selected directory must also be
+visible at that path to the SooperLooper engine. After installation, run
+`slweb`. The HTTP server listens on
 localhost by default; binding it to another address exposes powerful
-loop controls to the network without authentication.
+loop controls and the WAV library to the network without authentication.
 
 For full details see the documentation in [`mod_docs/`](mod_docs/):
 

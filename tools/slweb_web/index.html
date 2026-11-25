@@ -20,7 +20,7 @@
         <label class="control tempo-control"><span>Tempo <b id="tempo-value">—</b> <small>BPM</small></span><input id="tempo" type="range" min="30" max="300" step="0.1" data-scope="global" data-control="tempo"></label>
         <label class="control"><span>Entrée <b id="input-gain-value">—</b></span><input id="input-gain" type="range" min="0" max="1" step="0.01" data-scope="global" data-control="input_gain"></label>
         <label class="control"><span>Sortie sèche <b id="dry-value">—</b></span><input id="dry" type="range" min="0" max="1" step="0.01" data-scope="global" data-control="dry"></label>
-        <label class="control"><span>Sortie boucle <b id="wet-value">—</b></span><input id="wet" type="range" min="0" max="1" step="0.01" data-scope="global" data-control="wet"></label>
+        <label class="control"><span>Sortie boucle <b id="wet-value">—</b></span><input id="wet" type="range" min="0" max="1" step="0.01" data-scope="global" data-control="wet"><span id="global-wet-meter" class="wet-meter" role="progressbar" aria-label="Wet global" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0"><span></span></span></label>
         <label class="control sync-control"><span>Sync to</span><select id="sync-source" data-scope="global" data-control="sync_source">
           <option value="0">Aucune</option>
           <option value="-3">Interne</option>
@@ -45,6 +45,29 @@
 
     <footer><span>slweb · commandes OSC directes</span><span id="status-message" role="status"></span></footer>
   </main>
+  <div id="file-picker" class="file-picker" hidden>
+    <section class="file-dialog" role="dialog" aria-modal="true" aria-labelledby="file-title">
+      <header class="file-dialog-head">
+        <div>
+          <p id="file-mode" class="eyebrow">FICHIERS WAV</p>
+          <h2 id="file-title">Choisir un fichier</h2>
+        </div>
+        <button id="file-close" class="button secondary" type="button" aria-label="Fermer">×</button>
+      </header>
+      <nav id="file-breadcrumbs" class="file-breadcrumbs" aria-label="Dossier courant"></nav>
+      <p class="file-root-note">Les fichiers sont lus et écrits par le moteur SooperLooper. Il doit avoir accès à ce même dossier.</p>
+      <div id="file-list" class="file-list"></div>
+      <p id="file-error" class="file-error" role="status"></p>
+      <label id="save-name-row" class="save-name-row" hidden>
+        <span>Nom du fichier WAV</span>
+        <input id="save-filename" type="text" autocomplete="off" placeholder="mon-loop.wav">
+      </label>
+      <footer class="file-dialog-actions">
+        <button id="file-cancel" class="button secondary" type="button">Annuler</button>
+        <button id="file-confirm" class="button secondary" type="button" disabled>Ouvrir</button>
+      </footer>
+    </section>
+  </div>
   <script src="/app.js"></script>
 </body>
 </html>

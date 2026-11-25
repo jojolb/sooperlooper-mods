@@ -9,11 +9,18 @@
     return `${mins}:${String(Math.floor(value % 60)).padStart(2, "0")}`;
   };
   const formatNumber = (value, digits = 1) => Number.isFinite(Number(value)) ? Number(value).toFixed(digits) : "—";
+  const updateMeter = (meter, value) => {
+    const amount = Math.max(0, Math.min(1, Number(value) || 0));
+    meter.setAttribute("aria-valuenow", String(amount));
+    meter.firstElementChild.style.width = `${amount * 100}%`;
+  };
   const safe = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
   })[char]);
   let statusTimer = 0;
   let commandQueue = Promise.resolve();
+  const filePicker = $("file-picker");
+  const pickerState = { mode: "", index: -1, path: "", selectedPath: "", entries: [] };
   const showStatus = (message) => {
     $("status-message").textContent = message || "";
     clearTimeout(statusTimer);
@@ -27,7 +34,11 @@
       body: JSON.stringify(data)
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Erreur de communication");
+    if (!response.ok) {
+      const error = new Error(result.error || "Erreur de communication");
+      error.status = response.status;
+      throw error;
+    }
     return result;
   }
 
@@ -57,6 +68,7 @@
         input.value = value;
         $(label).textContent = formatNumber(value, digits);
       }
+      if (name === "wet") updateMeter($("global-wet-meter"), input.value);
     });
     const syncSource = $("sync-source");
     syncSource.disabled = !state.connected;
@@ -104,6 +116,7 @@
           <div class="loop-mix">
             <label class="control"><span>Feedback <b>—</b></span><input type="range" min="0" max="1" step="0.01" data-scope="loop" data-control="feedback" data-index="${index}"></label>
             <label class="control"><span>Gain entrée <b>—</b></span><input type="range" min="0" max="1" step="0.01" data-scope="loop" data-control="input_gain" data-index="${index}"></label>
+            <label class="control wet-loop-control"><span>Wet <b>—</b></span><input type="range" min="0" max="1" step="0.01" data-scope="loop" data-control="wet" data-index="${index}"><span class="wet-meter" role="progressbar" aria-label="Wet boucle ${index + 1}" aria-valuemin="0" aria-valuemax="1" aria-valuenow="0"><span></span></span></label>
           </div>
         </article>`;
       }).join("");
@@ -126,6 +139,9 @@
         input.disabled = !state.connected;
         if (value !== undefined && !editing) {
           input.closest(".control").querySelector("b").textContent = formatNumber(value, 2);
+        }
+        if (input.dataset.control === "wet") {
+          updateMeter(input.closest(".control").querySelector(".wet-meter"), input.value);
         }
       });
       card.querySelectorAll(".loop-setting").forEach((input) => {
@@ -168,27 +184,136 @@
     }
   }
 
-  async function loadLoop(button) {
-    const filename = prompt("Chemin du fichier WAV accessible à la machine du moteur SooperLooper :");
-    if (!filename) return;
+  function closeFilePicker() {
+    filePicker.hidden = true;
+  }
+
+  function updateSaveSelection() {
+    const name = $("save-filename").value.trim();
+    const validName = name && name !== "." && name !== ".." &&
+      !name.includes("/") && !name.includes("\\") && name.toLowerCase().endsWith(".wav");
+    pickerState.selectedPath = validName
+      ? (pickerState.path ? `${pickerState.path}/${name}` : name)
+      : "";
+    $("file-confirm").disabled = !pickerState.selectedPath;
+  }
+
+  async function browseFiles(path = "") {
+    $("file-error").textContent = "";
     try {
-      await post("/api/load", { index: Number(button.dataset.index), filename });
-      showStatus("Commande de chargement envoyée");
+      const response = await fetch(`/api/files?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Impossible de lire ce dossier");
+      pickerState.path = data.path;
+      pickerState.entries = data.entries;
+
+      const crumbs = [{ name: "Fichiers", path: "" }];
+      let current = "";
+      for (const part of data.path ? data.path.split("/") : []) {
+        current = current ? `${current}/${part}` : part;
+        crumbs.push({ name: part, path: current });
+      }
+      $("file-breadcrumbs").innerHTML = crumbs.map((crumb) =>
+        `<button type="button" data-open-path="${safe(crumb.path)}">${safe(crumb.name)}</button>`
+      ).join("");
+
+      const rows = data.entries.map((entry) => {
+        const directory = entry.type === "directory";
+        return `<button type="button" class="file-entry ${directory ? "directory" : "audio"}"
+          ${directory ? `data-open-path="${safe(entry.path)}"` : `data-file-path="${safe(entry.path)}"`}
+          aria-selected="false">${safe(entry.name)}</button>`;
+      }).join("");
+      $("file-list").innerHTML = rows || '<p class="file-empty">Aucun dossier ou fichier WAV dans ce dossier.</p>';
+      if (data.truncated) $("file-error").textContent = "Liste partielle : plus de 1000 éléments.";
+
+      if (pickerState.mode === "save") updateSaveSelection();
+      else {
+        pickerState.selectedPath = "";
+        $("file-confirm").disabled = true;
+      }
     } catch (error) {
-      showStatus(error.message);
+      $("file-list").innerHTML = '<p class="file-empty">Dossier inaccessible.</p>';
+      $("file-error").textContent = error.message;
     }
   }
 
-  async function saveLoop(button) {
-    const filename = prompt("Chemin de destination du fichier WAV sur la machine du moteur SooperLooper :");
+  function openFilePicker(mode, index) {
+    pickerState.mode = mode;
+    pickerState.index = Number(index);
+    pickerState.path = "";
+    pickerState.selectedPath = "";
+    pickerState.entries = [];
+    $("file-mode").textContent = mode === "load" ? "CHARGER UNE BOUCLE" : "SAUVEGARDER UNE BOUCLE";
+    $("file-title").textContent = mode === "load" ? "Choisir un fichier WAV" : "Enregistrer un fichier WAV";
+    $("save-name-row").hidden = mode !== "save";
+    $("save-filename").value = "";
+    $("file-confirm").textContent = mode === "load" ? "Charger" : "Sauvegarder";
+    $("file-confirm").disabled = true;
+    filePicker.hidden = false;
+    browseFiles("");
+  }
+
+  async function confirmFileSelection() {
+    const filename = pickerState.selectedPath;
     if (!filename) return;
     try {
-      await post("/api/save", { index: Number(button.dataset.index), filename });
-      showStatus("Commande de sauvegarde envoyée");
+      if (pickerState.mode === "load") {
+        await post("/api/load", { index: pickerState.index, filename });
+        showStatus("Commande de chargement envoyée");
+      } else {
+        let overwrite = pickerState.entries.some((entry) =>
+          entry.type === "file" && entry.path === filename
+        );
+        if (overwrite && !confirm(`Le fichier ${filename} existe déjà. Le remplacer ?`)) return;
+        try {
+          await post("/api/save", { index: pickerState.index, filename, overwrite });
+        } catch (error) {
+          if (error.status !== 409 || overwrite ||
+              !confirm(`Le fichier ${filename} existe déjà. Le remplacer ?`)) throw error;
+          overwrite = true;
+          await post("/api/save", { index: pickerState.index, filename, overwrite });
+        }
+        showStatus("Commande de sauvegarde envoyée");
+      }
+      closeFilePicker();
     } catch (error) {
-      showStatus(error.message);
+      $("file-error").textContent = error.message;
     }
   }
+
+  $("file-list").addEventListener("click", (event) => {
+    const directory = event.target.closest("[data-open-path]");
+    if (directory) {
+      browseFiles(directory.dataset.openPath);
+      return;
+    }
+    const file = event.target.closest("[data-file-path]");
+    if (!file) return;
+    if (pickerState.mode === "load") {
+      pickerState.selectedPath = file.dataset.filePath;
+      $("file-list").querySelectorAll("[data-file-path]").forEach((item) => {
+        item.setAttribute("aria-selected", String(item === file));
+      });
+      $("file-confirm").disabled = false;
+    } else {
+      $("save-filename").value = file.textContent;
+      updateSaveSelection();
+    }
+  });
+  $("file-breadcrumbs").addEventListener("click", (event) => {
+    const crumb = event.target.closest("[data-open-path]");
+    if (crumb) browseFiles(crumb.dataset.openPath);
+  });
+  $("save-filename").addEventListener("input", updateSaveSelection);
+  $("file-confirm").addEventListener("click", confirmFileSelection);
+  $("file-cancel").addEventListener("click", closeFilePicker);
+  $("file-close").addEventListener("click", closeFilePicker);
+  filePicker.addEventListener("click", (event) => {
+    if (event.target === filePicker) closeFilePicker();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !filePicker.hidden) closeFilePicker();
+  });
 
   document.addEventListener("pointerdown", async (event) => {
     const button = event.target.closest(".command");
@@ -212,11 +337,11 @@
     const button = event.target.closest(".command");
     if (!button) return;
     if (button.dataset.command === "load") {
-      loadLoop(button);
+      openFilePicker("load", button.dataset.index);
       return;
     }
     if (button.dataset.command === "save") {
-      saveLoop(button);
+      openFilePicker("save", button.dataset.index);
       return;
     }
     if (event.detail !== 0) return;
@@ -226,6 +351,9 @@
     if (event.target.matches('input[type="range"]')) {
       const label = event.target.closest(".control").querySelector("b");
       if (label) label.textContent = formatNumber(event.target.value, event.target.dataset.control === "tempo" ? 1 : 2);
+      if (event.target.dataset.control === "wet") {
+        updateMeter(event.target.closest(".control").querySelector(".wet-meter"), event.target.value);
+      }
     }
   });
   document.addEventListener("change", (event) => {

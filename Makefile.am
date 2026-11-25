@@ -10,7 +10,8 @@
 
 EXTRA_DIST = autogen.sh configure OSC top_marker README_Windows.md windows
 EXTRA_DIST += tools/slweb.py tools/test_slweb.py \
-	tools/slweb_web/index.html tools/slweb_web/app.css tools/slweb_web/app.js
+	tools/slweb_web/index.html tools/slweb_web/app.css tools/slweb_web/app.js \
+	tools/loops/.gitkeep
 SUBDIRS =  libs src
 
 #------ albBegin ----------------------------------

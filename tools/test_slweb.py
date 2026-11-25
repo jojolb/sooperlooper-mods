@@ -2,10 +2,12 @@ import importlib.util
 import json
 import os
 import socket
+import tempfile
 import threading
 import time
 import unittest
 from http.server import ThreadingHTTPServer
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from urllib.parse import urlparse
 
@@ -33,12 +35,17 @@ class OscCodecTests(unittest.TestCase):
 
 class LoopLimitTests(unittest.TestCase):
     def setUp(self):
-        self.app = slweb.SlWeb("127.0.0.1", 9951, "127.0.0.1", 0)
+        self.files = tempfile.TemporaryDirectory()
+        os.makedirs(os.path.join(self.files.name, "loops"))
+        with open(os.path.join(self.files.name, "loops", "take.wav"), "wb") as wav:
+            wav.write(b"test")
+        self.app = slweb.SlWeb("127.0.0.1", 9951, "127.0.0.1", 0, self.files.name)
         self.sent = []
         self.app.send = lambda path, *args: self.sent.append((path, args))
 
     def tearDown(self):
         self.app.close()
+        self.files.cleanup()
 
     def test_only_four_loops_are_exposed(self):
         self.app._handle_pingack(("osc.udp://127.0.0.1:9951/", "test", 6))
@@ -68,29 +75,65 @@ class LoopLimitTests(unittest.TestCase):
         self.app.set_global("sync_source", -3)
         self.app.set_loop(0, "sync", 1)
         self.app.set_loop(0, "playback_sync", 1)
+        self.app.set_loop(0, "wet", 0.43)
         self.app.set_loop(0, "quantize", 2)
-        self.app.load_loop(0, "C:/loops/take.wav")
-        self.app.save_loop(0, "C:/loops/take.wav")
+        self.app.load_loop(0, "loops/take.wav")
+        self.app.save_loop(0, "loops/out.wav")
+        self.app._handle_osc("/ctrl", [0, "wet", 0.62])
         self.assertEqual(self.sent[0][0], "/set")
         self.assertEqual(self.sent[1][0], "/sl/0/set")
         self.assertEqual(self.sent[1][1], (("s", "sync"), ("f", 1)))
         self.assertEqual(self.sent[2][1], (("s", "playback_sync"), ("f", 1)))
-        self.assertEqual(self.sent[3][1], (("s", "quantize"), ("f", 2)))
-        self.assertEqual(self.sent[4][0], "/sl/0/load_loop")
-        self.assertEqual(self.sent[4][1][0], ("s", "C:/loops/take.wav"))
-        self.assertEqual(self.sent[5][0], "/sl/0/save_loop")
-        self.assertEqual(self.sent[5][1][:3], (
-            ("s", "C:/loops/take.wav"), ("s", "float"), ("s", "little")
+        self.assertEqual(self.sent[3][1], (("s", "wet"), ("f", 0.43)))
+        self.assertEqual(self.sent[4][1], (("s", "quantize"), ("f", 2)))
+        self.assertEqual(self.sent[5][0], "/sl/0/load_loop")
+        self.assertEqual(self.sent[5][1][0], (
+            "s", os.path.realpath(os.path.join(self.files.name, "loops", "take.wav"))
         ))
+        self.assertEqual(self.sent[6][0], "/sl/0/save_loop")
+        self.assertEqual(self.sent[6][1][:3], (
+            ("s", os.path.realpath(os.path.join(self.files.name, "loops", "out.wav"))),
+            ("s", "float"), ("s", "little")
+        ))
+        self.assertEqual(self.app.snapshot()["loops"][0]["wet"], 0.62)
         with self.assertRaises(ValueError):
             self.app.set_global("sync_source", 5)
         with self.assertRaises(ValueError):
             self.app.set_loop(0, "quantize", 4)
 
+    def test_file_paths_cannot_escape_root_and_only_wav_is_listed(self):
+        listing = self.app.list_files("")
+        self.assertEqual([entry["name"] for entry in listing["entries"]], ["loops"])
+        with self.assertRaises(ValueError):
+            self.app.resolve_directory("../")
+        with self.assertRaises(ValueError):
+            self.app.resolve_file("../outside.wav", for_save=True)
+        with self.assertRaises(ValueError):
+            self.app.resolve_file("loops/take.txt", for_save=True)
+        outside = tempfile.TemporaryDirectory()
+        try:
+            os.symlink(outside.name, os.path.join(self.files.name, "escape"), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            outside.cleanup()
+            self.skipTest("Les liens symboliques ne sont pas disponibles")
+        try:
+            with self.assertRaises(ValueError):
+                self.app.resolve_directory("escape")
+            with self.assertRaises(ValueError):
+                self.app.resolve_file("escape/out.wav", for_save=True)
+        finally:
+            outside.cleanup()
+
 
 class HttpTests(unittest.TestCase):
     def setUp(self):
-        self.app = slweb.SlWeb("127.0.0.1", 9951, "127.0.0.1", 0)
+        self.files = tempfile.TemporaryDirectory()
+        os.makedirs(os.path.join(self.files.name, "sets"))
+        with open(os.path.join(self.files.name, "sets", "take.wav"), "wb") as wav:
+            wav.write(b"test")
+        with open(os.path.join(self.files.name, "ignore.txt"), "w", encoding="utf-8") as text:
+            text.write("not audio")
+        self.app = slweb.SlWeb("127.0.0.1", 9951, "127.0.0.1", 0, self.files.name)
         self.app.state["connected"] = True
         self.app.state["loop_count"] = 1
         self.sent = []
@@ -105,6 +148,7 @@ class HttpTests(unittest.TestCase):
         self.server.shutdown()
         self.server.server_close()
         self.app.close()
+        self.files.cleanup()
 
     def test_serves_interface_and_state(self):
         with urlopen(self.base_url + "/") as response:
@@ -121,18 +165,49 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(self.sent[0][0], "/sl/0/down")
 
     def test_load_api_sends_engine_path(self):
-        body = json.dumps({"index": 0, "filename": "/loops/take.wav"}).encode()
+        body = json.dumps({"index": 0, "filename": "sets/take.wav"}).encode()
         request = Request(self.base_url + "/api/load", data=body, headers={"Content-Type": "application/json"})
         with urlopen(request) as response:
             self.assertEqual(json.load(response), {"ok": True})
         self.assertEqual(self.sent[0][0], "/sl/0/load_loop")
+        self.assertEqual(
+            self.sent[0][1][0][1],
+            os.path.realpath(os.path.join(self.files.name, "sets", "take.wav")),
+        )
 
     def test_save_api_sends_engine_path(self):
-        body = json.dumps({"index": 0, "filename": "/loops/mix.wav"}).encode()
+        body = json.dumps({"index": 0, "filename": "sets/mix.wav"}).encode()
         request = Request(self.base_url + "/api/save", data=body, headers={"Content-Type": "application/json"})
         with urlopen(request) as response:
             self.assertEqual(json.load(response), {"ok": True})
         self.assertEqual(self.sent[0][0], "/sl/0/save_loop")
+
+    def test_save_api_requires_overwrite_confirmation(self):
+        body = json.dumps({"index": 0, "filename": "sets/take.wav"}).encode()
+        request = Request(self.base_url + "/api/save", data=body, headers={"Content-Type": "application/json"})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request)
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(self.sent, [])
+
+    def test_file_api_browses_wav_and_rejects_traversal(self):
+        with urlopen(self.base_url + "/api/files") as response:
+            data = json.load(response)
+        self.assertEqual([entry["name"] for entry in data["entries"]], ["sets"])
+        with urlopen(self.base_url + "/api/files?path=sets") as response:
+            data = json.load(response)
+        self.assertEqual([entry["name"] for entry in data["entries"]], ["take.wav"])
+        with self.assertRaises(HTTPError) as error:
+            urlopen(self.base_url + "/api/files?path=..")
+        self.assertEqual(error.exception.code, 400)
+
+    def test_save_requires_confirmation_before_overwriting(self):
+        body = json.dumps({"index": 0, "filename": "sets/take.wav"}).encode()
+        request = Request(self.base_url + "/api/save", data=body, headers={"Content-Type": "application/json"})
+        with self.assertRaises(HTTPError) as error:
+            urlopen(request)
+        self.assertEqual(error.exception.code, 409)
+        self.assertEqual(self.sent, [])
 
 
 class FakeOscEngine:
