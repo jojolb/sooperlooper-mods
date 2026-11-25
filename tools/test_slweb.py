@@ -76,16 +76,19 @@ class LoopLimitTests(unittest.TestCase):
         self.app.set_loop(0, "sync", 1)
         self.app.set_loop(0, "playback_sync", 1)
         self.app.set_loop(0, "wet", 0.43)
-        self.app.set_loop(0, "quantize", 2)
+        self.app.set_global("quantize", 2)
         self.app.load_loop(0, "loops/take.wav")
         self.app.save_loop(0, "loops/out.wav")
         self.app._handle_osc("/ctrl", [0, "wet", 0.62])
+        self.app._handle_osc("/ctrl", [0, "quantize", 2])
         self.assertEqual(self.sent[0][0], "/set")
         self.assertEqual(self.sent[1][0], "/sl/0/set")
         self.assertEqual(self.sent[1][1], (("s", "sync"), ("f", 1)))
         self.assertEqual(self.sent[2][1], (("s", "playback_sync"), ("f", 1)))
         self.assertEqual(self.sent[3][1], (("s", "wet"), ("f", 0.43)))
-        self.assertEqual(self.sent[4][1], (("s", "quantize"), ("f", 2)))
+        self.assertEqual(self.sent[4], (
+            "/sl/-1/set", (("s", "quantize"), ("f", 2))
+        ))
         self.assertEqual(self.sent[5][0], "/sl/0/load_loop")
         self.assertEqual(self.sent[5][1][0], (
             "s", os.path.realpath(os.path.join(self.files.name, "loops", "take.wav"))
@@ -96,10 +99,46 @@ class LoopLimitTests(unittest.TestCase):
             ("s", "float"), ("s", "little")
         ))
         self.assertEqual(self.app.snapshot()["loops"][0]["wet"], 0.62)
+        self.assertEqual(self.app.snapshot()["globals"]["quantize"], 2)
         with self.assertRaises(ValueError):
             self.app.set_global("sync_source", 5)
         with self.assertRaises(ValueError):
-            self.app.set_loop(0, "quantize", 4)
+            self.app.set_global("quantize", 4)
+        with self.assertRaises(ValueError):
+            self.app.set_loop(0, "quantize", 2)
+
+    def test_sync_source_keeps_the_requested_value_until_engine_confirms_it(self):
+        self.app.state["connected"] = True
+        self.app.state["loop_count"] = 2
+
+        self.app.set_global("sync_source", 2)
+        self.app._handle_osc("/ctrl", [-2, "sync_source", 1])
+        self.assertEqual(self.app.snapshot()["pending_globals"]["sync_source"], 2)
+        self.assertNotIn("sync_source", self.app.snapshot()["globals"])
+
+        self.app._handle_osc("/ctrl", [-2, "sync_source", 2])
+        self.assertEqual(self.app.snapshot()["globals"]["sync_source"], 2)
+        self.assertNotIn("sync_source", self.app.snapshot()["pending_globals"])
+        self.assertNotIn("sync_source", self.app.pending_global_values)
+        self.assertEqual(self.sent[0], ("/set", (("s", "sync_source"), ("f", 2))))
+
+    def test_waiting_states_are_named_for_start_and_stop(self):
+        self.app.state["loop_count"] = 1
+        self.app._handle_osc("/ctrl", [0, "state", 1])
+        self.app._handle_osc("/ctrl", [0, "waiting", 1])
+        self.assertEqual(self.app.snapshot()["loops"][0]["state_label"], "waiting start…")
+        self.assertEqual(self.app.snapshot()["loops"][0]["waiting"], 1)
+
+        self.app._handle_osc("/ctrl", [0, "state", 3])
+        self.assertEqual(self.app.snapshot()["loops"][0]["state_label"], "waiting stop…")
+
+    def test_new_loops_inherit_the_global_quantize_value(self):
+        self.app.state["loop_count"] = 1
+        self.app.state["globals"]["quantize"] = 3
+        self.app._handle_pingack(("osc.udp://127.0.0.1:9951/", "test", 2, 7))
+        self.assertIn((
+            "/sl/1/set", (("s", "quantize"), ("f", 3))
+        ), self.sent)
 
     def test_file_paths_cannot_escape_root_and_only_wav_is_listed(self):
         listing = self.app.list_files("")
@@ -163,6 +202,17 @@ class HttpTests(unittest.TestCase):
         with urlopen(request) as response:
             self.assertEqual(json.load(response), {"ok": True})
         self.assertEqual(self.sent[0][0], "/sl/0/down")
+
+    def test_global_quantize_api_broadcasts_to_all_loops(self):
+        body = json.dumps({
+            "scope": "global", "control": "quantize", "value": 3
+        }).encode()
+        request = Request(self.base_url + "/api/set", data=body, headers={"Content-Type": "application/json"})
+        with urlopen(request) as response:
+            self.assertEqual(json.load(response), {"ok": True})
+        self.assertEqual(self.sent[0], (
+            "/sl/-1/set", (("s", "quantize"), ("f", 3.0))
+        ))
 
     def test_load_api_sends_engine_path(self):
         body = json.dumps({"index": 0, "filename": "sets/take.wav"}).encode()

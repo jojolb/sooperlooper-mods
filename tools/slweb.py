@@ -35,12 +35,12 @@ COMMANDS = {
 }
 LOOP_SET_CONTROLS = {
     "feedback", "rec_thresh", "wet", "dry", "input_gain", "rate",
-    "sync", "playback_sync", "quantize", "round", "relative_sync",
+    "sync", "playback_sync", "round", "relative_sync",
 }
-GLOBAL_SET_CONTROLS = {"tempo", "wet", "dry", "input_gain", "sync_source"}
+GLOBAL_SET_CONTROLS = {"tempo", "wet", "dry", "input_gain", "sync_source", "quantize"}
 STATE_NAMES = {
-    -1: "inconnu", 0: "arrêt", 1: "démarrage", 2: "enregistrement",
-    3: "arrêt en attente", 4: "lecture", 5: "overdub", 6: "multiplication",
+    -1: "inconnu", 0: "arrêt", 1: "waiting start…", 2: "enregistrement",
+    3: "waiting stop…", 4: "lecture", 5: "overdub", 6: "multiplication",
     7: "insertion", 8: "remplacement", 9: "délai", 10: "muet",
     11: "scratch", 12: "one-shot", 13: "substitution", 14: "pause",
 }
@@ -128,6 +128,7 @@ class SlWeb:
             "loops": [],
             "error": "",
         }
+        self.pending_global_values = {}
         self.loop_values = {}
         self.last_ping = 0.0
         self.connected_once = False
@@ -210,8 +211,13 @@ class SlWeb:
         elif path == "/ctrl" and len(values) >= 3:
             index, control, value = values[:3]
             with self.lock:
-                if index == -2:
-                    self.state["globals"][control] = value
+                if control == "quantize" and 0 <= index < MAX_LOOPS:
+                    pending = self.pending_global_values.get("quantize")
+                    if index == 0 or (pending is not None and float(value) == pending[0]):
+                        self._update_global_value("quantize", value)
+                    self.loop_values.setdefault(index, {})[control] = value
+                elif index == -2:
+                    self._update_global_value(control, value)
                 elif 0 <= index < MAX_LOOPS:
                     self.loop_values.setdefault(index, {})[control] = value
         elif path == "/prop" and len(values) >= 3:
@@ -249,6 +255,9 @@ class SlWeb:
         if engine_id is not None and self.engine_id is not None and engine_id != self.engine_id:
             self.registered_count = -1
             self.loop_values.clear()
+            with self.lock:
+                self.pending_global_values.clear()
+                self.state["globals"].pop("quantize", None)
         if engine_id is not None:
             self.engine_id = engine_id
         if count < previous_count:
@@ -266,6 +275,11 @@ class SlWeb:
         if self.registered_count != count:
             self._register(count)
             self.registered_count = count
+        with self.lock:
+            quantize = self.state["globals"].get("quantize")
+        if quantize is not None and count > previous_count:
+            for index in range(max(0, previous_count), min(count, MAX_LOOPS)):
+                self.send("/sl/{}/set".format(index), ("s", "quantize"), ("f", quantize))
 
     def _register(self, count):
         for control in GLOBAL_UPDATE_CONTROLS:
@@ -300,7 +314,22 @@ class SlWeb:
             result["loops"] = loops
             result["hidden_loops"] = max(0, count - MAX_LOOPS)
             result["globals"] = dict(self.state["globals"])
+            now = time.monotonic()
+            result["pending_globals"] = {
+                control: value
+                for control, (value, deadline) in self.pending_global_values.items()
+                if deadline > now
+            }
             return result
+
+    def _update_global_value(self, control, value):
+        pending = self.pending_global_values.get(control)
+        if pending is not None:
+            expected, deadline = pending
+            if time.monotonic() < deadline and float(value) != expected:
+                return
+            self.pending_global_values.pop(control, None)
+        self.state["globals"][control] = value
 
     def command(self, index, command, phase):
         index = int(index)
@@ -323,8 +352,6 @@ class SlWeb:
             raise ValueError("Paramètre de boucle invalide")
         if control in {"sync", "playback_sync", "round", "relative_sync"} and value not in (0, 1):
             raise ValueError("Ce paramètre attend une valeur 0 ou 1")
-        if control == "quantize" and (not float(value).is_integer() or int(value) not in (0, 1, 2, 3)):
-            raise ValueError("Valeur Quantize invalide")
         self.send("/sl/{}/set".format(index), ("s", control), ("f", value))
 
     def set_global(self, control, value):
@@ -332,11 +359,25 @@ class SlWeb:
             raise ValueError("Moteur SooperLooper non connecté")
         if control not in GLOBAL_SET_CONTROLS:
             raise ValueError("Paramètre global invalide")
-        if control == "sync_source" and (
-            not float(value).is_integer() or int(value) not in range(-3, MAX_LOOPS + 1)
-        ):
-            raise ValueError("Source de synchronisation invalide")
-        self.send("/set", ("s", control), ("f", value))
+        path = "/set"
+        if control == "sync_source":
+            loop_count = min(self.state["loop_count"], MAX_LOOPS)
+            if not float(value).is_integer() or int(value) not in range(-3, loop_count + 1):
+                raise ValueError("Source de synchronisation invalide")
+        elif control == "quantize":
+            if not float(value).is_integer() or int(value) not in (0, 1, 2, 3):
+                raise ValueError("Valeur Quantize invalide")
+            path = "/sl/-1/set"
+
+        with self.lock:
+            if control in {"sync_source", "quantize"}:
+                self.pending_global_values[control] = (float(value), time.monotonic() + 5.0)
+        try:
+            self.send(path, ("s", control), ("f", value))
+        except OSError:
+            with self.lock:
+                self.pending_global_values.pop(control, None)
+            raise
 
     def load_loop(self, index, filename):
         index = int(index)

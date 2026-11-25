@@ -19,6 +19,8 @@
   })[char]);
   let statusTimer = 0;
   let commandQueue = Promise.resolve();
+  let controlQueue = Promise.resolve();
+  const pendingGlobalValues = new Map();
   const filePicker = $("file-picker");
   const pickerState = { mode: "", index: -1, path: "", selectedPath: "", entries: [] };
   const showStatus = (message) => {
@@ -43,8 +45,52 @@
   }
 
   function sendCommand(data) {
-    commandQueue = commandQueue.then(() => post("/api/command", data)).catch((error) => showStatus(error.message));
+    commandQueue = commandQueue
+      .then(() => controlQueue)
+      .then(() => post("/api/command", data))
+      .catch((error) => showStatus(error.message));
     return commandQueue;
+  }
+
+  function globalControlValue(name, serverValue, serverPendingValue) {
+    const pending = pendingGlobalValues.get(name);
+    if (!pending) {
+      return serverPendingValue === undefined ? serverValue : serverPendingValue;
+    }
+    if (Number(serverPendingValue) === pending.value) {
+      pending.sent = true;
+      return pending.value;
+    }
+    if ((pending.sent && serverPendingValue === undefined) || Date.now() >= pending.expires) {
+      pendingGlobalValues.delete(name);
+      return serverValue;
+    }
+    return pending.value;
+  }
+
+  async function setControl(input) {
+    const scope = input.dataset.scope;
+    const control = input.dataset.control;
+    const value = input.type === "checkbox" ? (input.checked ? 1 : 0) : Number(input.value);
+    if (scope === "global" && (control === "sync_source" || control === "quantize")) {
+      pendingGlobalValues.set(control, { value, expires: Date.now() + 5000, sent: false });
+    }
+    const request = controlQueue.then(() => post("/api/set", {
+      scope,
+      index: Number(input.dataset.index),
+      control,
+      value
+    }));
+    controlQueue = request.catch(() => {});
+    try {
+      await request;
+      const pending = pendingGlobalValues.get(control);
+      if (pending && pending.value === value) pending.sent = true;
+    } catch (error) {
+      const pending = pendingGlobalValues.get(control);
+      if (pending && pending.value === value) pendingGlobalValues.delete(control);
+      showStatus(error.message);
+    }
   }
 
   function render(state) {
@@ -60,6 +106,7 @@
     $("remove-loop").disabled = !state.connected || state.loop_count <= 0;
 
     const globals = state.globals || {};
+    const loops = state.loops || [];
     [["tempo", "tempo-value", 1], ["input_gain", "input-gain-value", 2], ["dry", "dry-value", 2], ["wet", "wet-value", 2]].forEach(([name, label, digits]) => {
       const value = globals[name];
       const input = $(name.replaceAll("_", "-"));
@@ -70,17 +117,28 @@
       }
       if (name === "wet") updateMeter($("global-wet-meter"), input.value);
     });
+    const quantize = $("quantize");
+    const pendingGlobals = state.pending_globals || {};
+    const quantizeValue = globalControlValue(
+      "quantize", globals.quantize ?? loops[0]?.quantize, pendingGlobals.quantize
+    );
+    quantize.disabled = !state.connected || loops.length === 0;
+    if (quantizeValue !== undefined && document.activeElement !== quantize) {
+      quantize.value = String(Math.trunc(Number(quantizeValue)));
+    }
     const syncSource = $("sync-source");
     syncSource.disabled = !state.connected;
     syncSource.querySelectorAll("option[value]").forEach((option) => {
       const sourceLoop = Number(option.value);
       if (sourceLoop > 0) option.disabled = sourceLoop > state.loop_count;
     });
-    if (globals.sync_source !== undefined && document.activeElement !== syncSource) {
-      syncSource.value = String(Math.trunc(Number(globals.sync_source)));
+    const syncSourceValue = globalControlValue(
+      "sync_source", globals.sync_source, pendingGlobals.sync_source
+    );
+    if (syncSourceValue !== undefined && document.activeElement !== syncSource) {
+      syncSource.value = String(Math.trunc(Number(syncSourceValue)));
     }
 
-    const loops = state.loops || [];
     const currentIndexes = [...loopsEl.children].map((card) => Number(card.dataset.loopIndex));
     const nextIndexes = loops.map((loop) => loop.index);
     if (currentIndexes.join(",") !== nextIndexes.join(",")) {
@@ -106,12 +164,6 @@
           <div class="loop-options">
             <label class="toggle"><input type="checkbox" class="loop-setting" data-scope="loop" data-control="sync" data-index="${index}"><span>Sync</span></label>
             <label class="toggle"><input type="checkbox" class="loop-setting" data-scope="loop" data-control="playback_sync" data-index="${index}"><span>Play sync</span></label>
-            <label class="control quantize-control"><span>Quantize</span><select class="loop-setting" data-scope="loop" data-control="quantize" data-index="${index}">
-              <option value="3">Loop</option>
-              <option value="2">8th</option>
-              <option value="0">Off</option>
-              <option value="1">Cycle</option>
-            </select></label>
           </div>
           <div class="loop-mix">
             <label class="control"><span>Feedback <b>—</b></span><input type="range" min="0" max="1" step="0.01" data-scope="loop" data-control="feedback" data-index="${index}"></label>
@@ -127,6 +179,11 @@
       const stateClass = (loop.state_label || "").toLowerCase().replace(/[^a-z0-9-]/g, "-");
       stateElement.className = `state ${stateClass}`;
       stateElement.textContent = loop.state_label || "inconnu";
+      const recordButton = card.querySelector('.command[data-command="record"]');
+      const waitingState = Number(loop.state) === 1 || Number(loop.state) === 3;
+      const waitingRecord = Number(loop.waiting) > 0 && waitingState;
+      stateElement.classList.toggle("waiting", waitingState);
+      recordButton.classList.toggle("waiting", waitingRecord);
       const pos = Number(loop.loop_pos) || 0;
       const len = Number(loop.loop_len) || 0;
       card.querySelector(".time").textContent = `${formatTime(pos)} / ${formatTime(len)}`;
@@ -147,8 +204,7 @@
       card.querySelectorAll(".loop-setting").forEach((input) => {
         const value = loop[input.dataset.control];
         if (value !== undefined && document.activeElement !== input) {
-          if (input.type === "checkbox") input.checked = Number(value) !== 0;
-          else input.value = String(Math.trunc(Number(value)));
+          input.checked = Number(value) !== 0;
         }
         input.disabled = !state.connected;
       });
@@ -359,13 +415,9 @@
   document.addEventListener("change", (event) => {
     if (event.target.matches('input[type="range"]')) changeValue(event.target);
     if (event.target.matches("#sync-source, .loop-setting")) {
-      post("/api/set", {
-        scope: event.target.dataset.scope,
-        index: Number(event.target.dataset.index),
-        control: event.target.dataset.control,
-        value: event.target.type === "checkbox" ? (event.target.checked ? 1 : 0) : Number(event.target.value)
-      }).catch((error) => showStatus(error.message));
+      setControl(event.target);
     }
+    if (event.target.matches("#quantize")) setControl(event.target);
   });
   $("add-mono").addEventListener("click", () => post("/api/loops", { action: "add", channels: 1 }).catch((e) => showStatus(e.message)));
   $("add-stereo").addEventListener("click", () => post("/api/loops", { action: "add", channels: 2 }).catch((e) => showStatus(e.message)));

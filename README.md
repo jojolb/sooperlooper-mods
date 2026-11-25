@@ -112,10 +112,11 @@ from a mic placed near the pedal.
 minimal interface over HTTP and connects to an already-running SooperLooper
 engine over OSC. It shows up to four loops, with live state/position,
 transport commands (including Solo and Once), loading and saving WAV files
-by path on the engine machine, per-loop Sync/Play sync and Quantize controls,
-feedback/input-gain/Wet controls with live Wet meters, and global tempo/mix
-sliders. `Sync to` selects none, internal clock, JACK/Host, MIDI clock, or one
-of the four loops. MIDI binding management is not included.
+by path on the engine machine, per-loop Sync/Play sync controls, global
+Quantize and `Sync to` selectors, feedback/input-gain/Wet controls with live
+Wet meters, and global tempo/mix sliders. `Sync to` selects none, internal
+clock, JACK/Host, MIDI clock, or one of the four loops. MIDI binding
+management is not included.
 
 Run it from a source checkout with Python 3:
 
