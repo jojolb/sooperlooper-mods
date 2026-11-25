@@ -326,7 +326,14 @@ class SlWeb:
         pending = self.pending_global_values.get(control)
         if pending is not None:
             expected, deadline = pending
-            if time.monotonic() < deadline and float(value) != expected:
+            now = time.monotonic()
+            if now < deadline:
+                if float(value) != expected:
+                    return
+                # An older OSC /get response may still be in flight after the
+                # new value has been confirmed; keep ignoring mismatches briefly.
+                self.pending_global_values[control] = (expected, now + 1.5)
+                self.state["globals"][control] = value
                 return
             self.pending_global_values.pop(control, None)
         self.state["globals"][control] = value

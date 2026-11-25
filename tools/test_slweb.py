@@ -118,8 +118,12 @@ class LoopLimitTests(unittest.TestCase):
 
         self.app._handle_osc("/ctrl", [-2, "sync_source", 2])
         self.assertEqual(self.app.snapshot()["globals"]["sync_source"], 2)
-        self.assertNotIn("sync_source", self.app.snapshot()["pending_globals"])
-        self.assertNotIn("sync_source", self.app.pending_global_values)
+        self.assertEqual(self.app.snapshot()["pending_globals"]["sync_source"], 2)
+
+        # A delayed initial /get response must not overwrite the confirmed
+        # selection after the matching update has arrived.
+        self.app._handle_osc("/ctrl", [-2, "sync_source", 1])
+        self.assertEqual(self.app.snapshot()["globals"]["sync_source"], 2)
         self.assertEqual(self.sent[0], ("/set", (("s", "sync_source"), ("f", 2))))
 
     def test_waiting_states_are_named_for_start_and_stop(self):
