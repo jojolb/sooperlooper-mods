@@ -20,6 +20,7 @@
   let statusTimer = 0;
   let commandQueue = Promise.resolve();
   let controlQueue = Promise.resolve();
+  let syncSourceEditing = false;
   const pendingGlobalValues = new Map();
   const filePicker = $("file-picker");
   const pickerState = { mode: "", index: -1, path: "", selectedPath: "", entries: [] };
@@ -128,14 +129,16 @@
     }
     const syncSource = $("sync-source");
     syncSource.disabled = !state.connected;
-    syncSource.querySelectorAll("option[value]").forEach((option) => {
-      const sourceLoop = Number(option.value);
-      if (sourceLoop > 0) option.disabled = sourceLoop > state.loop_count;
-    });
+    if (!syncSourceEditing) {
+      syncSource.querySelectorAll("option[value]").forEach((option) => {
+        const sourceLoop = Number(option.value);
+        if (sourceLoop > 0) option.disabled = sourceLoop > state.loop_count;
+      });
+    }
     const syncSourceValue = globalControlValue(
       "sync_source", globals.sync_source, pendingGlobals.sync_source
     );
-    if (syncSourceValue !== undefined && document.activeElement !== syncSource) {
+    if (syncSourceValue !== undefined && !syncSourceEditing) {
       syncSource.value = String(Math.trunc(Number(syncSourceValue)));
     }
 
@@ -213,6 +216,7 @@
   }
 
   async function refresh() {
+    if (syncSourceEditing) return;
     try {
       const response = await fetch("/api/state", { cache: "no-store" });
       if (!response.ok) throw new Error("Le serveur web ne répond pas");
@@ -361,6 +365,11 @@
     if (crumb) browseFiles(crumb.dataset.openPath);
   });
   $("save-filename").addEventListener("input", updateSaveSelection);
+  $("sync-source").addEventListener("focus", () => { syncSourceEditing = true; });
+  $("sync-source").addEventListener("blur", () => {
+    syncSourceEditing = false;
+    refresh();
+  });
   $("file-confirm").addEventListener("click", confirmFileSelection);
   $("file-cancel").addEventListener("click", closeFilePicker);
   $("file-close").addEventListener("click", closeFilePicker);
